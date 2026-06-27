@@ -1,0 +1,43 @@
+# ERANDA — ÜRETİM overlay (sadece VPS'te kullanılır)
+# Kullanım:  docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# DİKKAT: İlk SSL sertifikası için önce ./init-letsencrypt.sh çalıştırılmalı (aşağıya bak).
+
+services:
+  # Dashboard'u dışarı kapat — artık sadece nginx üzerinden erişilecek.
+  # 9050 yalnız localhost'a bağlı (VPS'te SSH ile debug için), public değil.
+  dashboard:
+    ports:
+      - "127.0.0.1:9050:9050"
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: eranda-nginx
+    depends_on:
+      - dashboard
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./nginx/templates:/etc/nginx/templates:ro
+      - certbot-www:/var/www/certbot:ro
+      - certbot-conf:/etc/letsencrypt:ro
+    restart: always
+    # Template'i işle (envsubst) + her 6 saatte bir reload (yenilenen sertifikayı al)
+    command: >
+      sh -c '/docker-entrypoint.sh nginx -g "daemon off;" &
+             while :; do sleep 6h & wait $${!}; nginx -s reload; done'
+
+  certbot:
+    image: certbot/certbot
+    container_name: eranda-certbot
+    volumes:
+      - certbot-www:/var/www/certbot
+      - certbot-conf:/etc/letsencrypt
+    # Otomatik yenileme: 12 saatte bir dener (Let's Encrypt sertifikaları 90 gün)
+    entrypoint: sh -c 'trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot; sleep 12h & wait $${!}; done'
+
+volumes:
+  certbot-www:
+  certbot-conf:

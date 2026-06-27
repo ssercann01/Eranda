@@ -1,0 +1,67 @@
+# ERANDA — nginx reverse proxy (dashboard önünde)
+# Bu bir TEMPLATE: nginx resmi imajı açılışta ${DOMAIN}'i .env'den doldurur.
+# Sadece ${DOMAIN} değişkeni doldurulur; $host, $remote_addr gibi nginx değişkenleri olduğu gibi kalır.
+
+# WebSocket upgrade haritası (Dash bileşenleri için güvenli taraf)
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+# ── HTTP (80): ACME doğrulaması + HTTPS yönlendirme ──────────────────────────
+server {
+    listen 80;
+    server_name ${DOMAIN};
+
+    # Let's Encrypt HTTP-01 doğrulaması bu yoldan okunur
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    # Diğer her şey HTTPS'e
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+# ── HTTPS (443): dashboard reverse proxy ─────────────────────────────────────
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name ${DOMAIN};
+
+    ssl_certificate     /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    # Güvenlik başlıkları
+    add_header X-Frame-Options        SAMEORIGIN always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy        strict-origin-when-cross-origin always;
+
+    client_max_body_size 10m;
+
+    location / {
+        proxy_pass http://dashboard:9050;
+        proxy_http_version 1.1;
+
+        # WebSocket / upgrade
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+
+        # İndikatör hesabı uzun süren Dash callback'leri için cömert timeout
+        proxy_connect_timeout 60s;
+        proxy_send_timeout    300s;
+        proxy_read_timeout    300s;
+        proxy_buffering       off;
+    }
+}
