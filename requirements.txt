@@ -1,0 +1,31 @@
+# ERANDA V2 — Python bağımlılıkları
+# Not: torch KALDIRILDI (kod tabanında hesap için kullanılmıyordu).
+# İlk `docker compose build` aslında ilk testimiz — sürüm çakışması çıkarsa
+# burada sabitleyip ilerleriz.
+
+# --- Redis & serileştirme ---
+redis>=5.0
+msgpack>=1.0
+lz4>=4.0
+orjson>=3.9
+
+# --- Veri & bilim ---
+numpy<2                 # yerleşik numerik kodla güvenli taraf (numpy 2.0 kırıcı değişiklikleri)
+pandas>=2.0,<3
+scipy>=1.10
+
+# --- Teknik indikatörler ---
+TA-Lib>=0.6,<0.7        # C kütüphanesi 0.6.4 ile uyumlu (Dockerfile derliyor)
+ta>=0.11
+
+# --- Ağ / WebSocket ---
+aiohttp>=3.9
+websockets>=12
+websocket-client>=1.7
+
+# --- Dashboard ---
+dash>=3.0,<4            # app.run() API'si (kodun bunu kullanıyor)
+
+# --- Yardımcı ---
+psutil>=5.9
+schedule>=1.2

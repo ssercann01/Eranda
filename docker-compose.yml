@@ -1,0 +1,70 @@
+# ERANDA V2 — lokal/üretim stack
+# Çalıştır:  docker compose up --build
+# Durdur:    docker compose down        (veriyi korur)
+#            docker compose down -v      (Redis + setup verisini de siler)
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: eranda-redis
+    # Şifre boşsa şifresiz; .env'de REDIS_PASSWORD doldurursan otomatik --requirepass
+    command: >
+      sh -c '
+      if [ -n "$$REDIS_PASSWORD" ]; then
+        exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD";
+      else
+        exec redis-server --appendonly yes;
+      fi'
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+    volumes:
+      - redis-data:/data
+    restart: always
+    healthcheck:
+      # Şifresiz lokal testte çalışır. VPS'te şifre açarsan: redis-cli -a $$REDIS_PASSWORD ping
+      test: ["CMD-SHELL", "redis-cli ${REDIS_PASSWORD:+-a $REDIS_PASSWORD} ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  collector:
+    build: .
+    container_name: eranda-collector
+    command: python collector.py ${N_CONSUMERS:-1}
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DB: 0
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      SETUP_FILE: /data/setup2.json
+      COLLECTOR_SYMBOLS_OVERRIDE: ${COLLECTOR_SYMBOLS_OVERRIDE:-}
+    volumes:
+      - app-data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: always
+
+  dashboard:
+    build: .
+    container_name: eranda-dashboard
+    command: python dashboard.py
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DB: 0
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      SETUP_FILE: /data/setup2.json
+      COLLECTOR_SYMBOLS_OVERRIDE: ${COLLECTOR_SYMBOLS_OVERRIDE:-}
+    ports:
+      - "9050:9050"          # http://localhost:9050
+    volumes:
+      - app-data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: always
+
+volumes:
+  redis-data:
+  app-data:
