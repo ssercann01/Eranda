@@ -29,3 +29,8 @@ dash>=3.0,<4            # app.run() API'si (kodun bunu kullanıyor)
 # --- Yardımcı ---
 psutil>=5.9
 schedule>=1.2
+
+
+
+
+flask-login

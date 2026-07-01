@@ -18,6 +18,187 @@ from dash import Dash, dcc, html
 from dash import dash_table
 
 app = Dash(__name__, suppress_callback_exceptions=True)
+
+# ============================================================
+# ERANDA AUTH — e-posta + şifre (Redis) · Flask-Login
+# Bu blok app = Dash(...) satırından hemen sonra eklenir.
+# Kullanıcılar Redis'te "user:<email>" hash'inde tutulur,
+# şifreler werkzeug ile HASH'lenir (asla düz metin).
+# ============================================================
+import os as _auth_os
+import time as _auth_time
+from flask import request as _auth_request, redirect as _auth_redirect
+from flask_login import (
+    LoginManager, UserMixin, login_user, logout_user, current_user,
+)
+from werkzeug.security import generate_password_hash, check_password_hash
+
+# Dash'in altındaki Flask sunucusu
+server = app.server
+# Oturum imzalama anahtarı — .env'den gelir (SECRET_KEY)
+server.secret_key = _auth_os.environ.get("SECRET_KEY", "eranda-dev-secret-CHANGE-ME")
+
+_login_manager = LoginManager()
+_login_manager.init_app(server)
+
+
+def _auth_s(v):
+    """Redis bytes -> str (decode_responses kapalı olabilir)."""
+    return v.decode() if isinstance(v, (bytes, bytearray)) else v
+
+
+class _AuthUser(UserMixin):
+    def __init__(self, email):
+        self.id = email
+
+
+@_login_manager.user_loader
+def _auth_load_user(email):
+    try:
+        if redis_cache.client.exists("user:" + email):
+            return _AuthUser(email)
+    except Exception:
+        pass
+    return None
+
+
+# Giriş gerektirmeyen yollar
+_AUTH_PUBLIC = ("/login", "/register", "/logout", "/favicon.ico")
+
+
+@server.before_request
+def _auth_require_login():
+    p = _auth_request.path
+    if p in _AUTH_PUBLIC or p.startswith("/assets"):
+        return None
+    if not current_user.is_authenticated:
+        return _auth_redirect("/login")
+    return None
+
+
+# ---- self-contained giriş/kayıt sayfası (ERANDA teması) ----
+_AUTH_PAGE = """<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ERANDA — __TITLE__</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;font-family:-apple-system,Segoe UI,Roboto,Inter,sans-serif}
+body{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;
+ background:#07121F;color:#e8eff6;
+ background-image:radial-gradient(1000px 880px at 84% -8%,rgba(31,182,220,.26),transparent 72%),
+ radial-gradient(900px 900px at -8% 114%,rgba(31,182,220,.17),transparent 72%);
+ background-attachment:fixed}
+.card{width:100%;max-width:400px;background:#0a121c;border:1px solid #1c2735;border-radius:22px;
+ padding:40px 34px;box-shadow:0 40px 120px -40px #000}
+.brand{text-align:center;font-size:26px;font-weight:800;letter-spacing:2px;margin-bottom:6px}
+.brand span{color:#1FB6DC}
+.sub{text-align:center;color:#8899aa;font-size:14px;margin-bottom:26px}
+label{display:block;font-size:13px;color:#9ab0c2;margin-bottom:7px}
+input{width:100%;background:#070f17;border:1px solid #1c2735;border-radius:11px;padding:14px;
+ color:#fff;font-size:15px;margin-bottom:16px}
+input:focus{outline:none;border-color:#1FB6DC}
+button{width:100%;background:linear-gradient(90deg,#1FB6DC,#0e8fb5);color:#04222b;border:none;
+ padding:15px;font-size:15px;font-weight:700;border-radius:12px;cursor:pointer;margin-top:4px}
+button:hover{opacity:.92}
+.err{background:#ff546815;border:1px solid #ff546855;color:#ff8a96;font-size:13px;
+ padding:11px 14px;border-radius:10px;margin-bottom:18px;text-align:center}
+.foot{text-align:center;font-size:14px;color:#8899aa;margin-top:22px;
+ border-top:1px solid #14202c;padding-top:20px}
+.foot a{color:#1FB6DC;text-decoration:none;font-weight:600}
+</style></head>
+<body>
+<div class="card">
+<div class="brand">ERAND<span>A</span></div>
+<div class="sub">__SUBTITLE__</div>
+__ERROR__
+<form method="POST" action="__ACTION__">
+<label>Email</label>
+<input type="email" name="email" placeholder="you@email.com" required autofocus>
+<label>Password</label>
+<input type="password" name="password" placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;" required>
+<button type="submit">__BUTTON__</button>
+</form>
+<div class="foot">__SWITCH__</div>
+</div>
+</body></html>"""
+
+
+def _auth_render(title, subtitle, action, button, switch, error=""):
+    err_html = ('<div class="err">' + error + "</div>") if error else ""
+    return (_AUTH_PAGE
+            .replace("__TITLE__", title)
+            .replace("__SUBTITLE__", subtitle)
+            .replace("__ACTION__", action)
+            .replace("__BUTTON__", button)
+            .replace("__SWITCH__", switch)
+            .replace("__ERROR__", err_html))
+
+
+@server.route("/login", methods=["GET", "POST"])
+def login():
+    error = ""
+    if _auth_request.method == "POST":
+        email = (_auth_request.form.get("email") or "").strip().lower()
+        pw = _auth_request.form.get("password") or ""
+        stored = None
+        try:
+            stored = redis_cache.client.hget("user:" + email, "pw")
+        except Exception:
+            stored = None
+        if stored and check_password_hash(_auth_s(stored), pw):
+            login_user(_AuthUser(email))
+            return _auth_redirect("/")
+        error = "Invalid email or password."
+    return _auth_render(
+        "Log in", "Welcome back. Log in to your dashboard.",
+        "/login", "Log in",
+        'New to ERANDA? <a href="/register">Create account</a>',
+        error,
+    )
+
+
+@server.route("/register", methods=["GET", "POST"])
+def register():
+    error = ""
+    if _auth_request.method == "POST":
+        email = (_auth_request.form.get("email") or "").strip().lower()
+        pw = _auth_request.form.get("password") or ""
+        if not email or "@" not in email:
+            error = "Enter a valid email address."
+        elif len(pw) < 6:
+            error = "Password must be at least 6 characters."
+        else:
+            exists = False
+            try:
+                exists = bool(redis_cache.client.exists("user:" + email))
+            except Exception:
+                exists = False
+            if exists:
+                error = "An account with this email already exists."
+            else:
+                redis_cache.client.hset("user:" + email, mapping={
+                    "email": email,
+                    "pw": generate_password_hash(pw),
+                    "created": str(int(_auth_time.time())),
+                })
+                login_user(_AuthUser(email))
+                return _auth_redirect("/")
+    return _auth_render(
+        "Sign up", "Create your account and start a 7-day free trial.",
+        "/register", "Create account",
+        'Already have an account? <a href="/login">Log in</a>',
+        error,
+    )
+
+
+@server.route("/logout")
+def logout():
+    logout_user()
+    return _auth_redirect("/login")
+# ============================================================
+# AUTH SONU
+# ============================================================
+
 app.title = "ERANDA"
 
 # ── Kontrol stilleri (koyu tema + mavi vurgu, GitHub-dark tonları) ────────────
@@ -59,6 +240,14 @@ app.index_string = '''<!DOCTYPE html>
 <head>
     {%metas%}<title>{%title%}</title>{%favicon%}{%css%}
     <style>
+        html, body { background-color: #07121F !important; margin: 0; }
+        body {
+            background-image:
+                radial-gradient(1000px 880px at 84% -8%, rgba(31,182,220,0.26), transparent 72%),
+                radial-gradient(900px 900px at -8% 114%, rgba(31,182,220,0.17), transparent 72%);
+            background-repeat: no-repeat;
+            background-attachment: fixed;
+        }
         #new-symbol-input::placeholder { color: #6e7681; }
         #new-symbol-input:focus {
             border-color: #1FB6DC !important;
@@ -230,7 +419,7 @@ app.layout = html.Div([
     html.Div(id='cs-dummy', style={'display': 'none'}),
     html.Div(id='live-update-text',
              style={'color': 'white', 'fontFamily': 'monospace'})
-], style={'backgroundColor': '#000000', 'padding': '20px'})
+], style={'backgroundColor': 'transparent', 'padding': '20px'})
 
 
 # ── Clientside render: grid-store JSON → tek innerHTML yazımı ─────────────────
